@@ -1,0 +1,4 @@
+﻿_apalache-out/
+states/
+__pycache__/
+*.pyc

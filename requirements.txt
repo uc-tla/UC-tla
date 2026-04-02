@@ -1,0 +1,2 @@
+# No third-party Python packages are required.
+# The runner script uses only Python standard library modules.
