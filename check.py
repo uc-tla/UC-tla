@@ -4,10 +4,6 @@
 check_termination.py
 Merged verifier for both properties with rsweep-style parameterization.
 
-Key idea (same as __run_rsweep.py):
-- Do NOT maintain multiple CInitSafetyR* constants in TLA.
-- Patch MaxRound inside target CInit block before each run.
-- Restore original TLA after runs.
 
 Commands:
   python check_termination.py --termination
