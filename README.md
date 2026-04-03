@@ -39,7 +39,7 @@ python check.py --both
   - termination sweep over `R = [1, 2, 3, 5, 8, 10]`
 - `--safety-sweep`
   - safety sweep over `R = [1, 2, 3, 5, 8, 10]`
-  - also writes `safety_table.tex`
+  
 - `--both`
   - runs termination sweep then safety sweep
 - `--rmax=N`

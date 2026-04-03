@@ -618,28 +618,12 @@ InitiallyHonest == Validators \ InitiallyCorrupted
 \* point to the new (undecided) height. We want to know if ALL honest nodes decided at h=0.
 NotYetTerminated == ~(\A p \in InitiallyHonest : decision[p][0] # NilValue)
 
-\* Negation of Safety: two honest nodes decided different values at same height
-\* Use with Apalache simulate --inv=NotSafe to search for safety violations.
-\* EXITCODE=0 (no witness) => Safety holds for the given bounds.
-\* EXITCODE=12 (witness found) => Safety violated (should not happen with f<n/3).
-NotSafe ==
-    \E hh \in 0..MaxHeight :
-        \E p \in InitiallyHonest, q \in InitiallyHonest :
-            /\ decision[p][hh] # NilValue
-            /\ decision[q][hh] # NilValue
-            /\ decision[p][hh] # decision[q][hh]
 
 (***************************************************************************
  Safety / consistency checks (state-space friendly)
 ***************************************************************************)
 
-DecidedValuesAt(hh) ==
-    {decision[p][hh] : p \in {q \in InitiallyHonest : decision[q][hh] # NilValue}}
-
-AgreementAtHeight(hh) == Cardinality(DecidedValuesAt(hh)) <= 1
-
-Safety == \A hh \in 0..MaxHeight : AgreementAtHeight(hh)
-
+\* Safety invariant used by checks: Agreement
 Agreement ==
     \A hh \in 0..MaxHeight :
         \A p \in InitiallyHonest, q \in InitiallyHonest :
