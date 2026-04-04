@@ -1,0 +1,149 @@
+% ============================================================
+% Verification Tables + Prose (Termination + Safety)
+% F^{V,Delta,Sigma}_{Tendermint}  Delay-Attack Model
+% ============================================================
+%
+% Required in preamble:
+%   \usepackage{booktabs}
+%   \usepackage{amsmath,amssymb}
+%
+% Insert in body:
+%   \input{verification_tables}
+% ============================================================
+
+% ==================================================================
+% 1) TERMINATION
+% ==================================================================
+\subsection{Termination Verification}
+
+For termination, we only use two key notions:
+\(\mathrm{InitiallyHonest}\) and \(\mathrm{NotYetTerminated}\).
+
+\begin{align*}
+\mathrm{InitiallyHonest}
+&\triangleq
+V \setminus V_{\mathrm{corrupted}} \\
+\mathrm{NotYetTerminated}
+&\triangleq
+\neg\Big(\forall p\in\mathrm{InitiallyHonest},\; \mathrm{decision}_p(0)\neq \bot\Big)
+\end{align*}
+
+Interpretation:
+\(\mathrm{InitiallyHonest}\) is the set of nodes not initially corrupted;
+\(\mathrm{NotYetTerminated}\) means that at least one initially honest node
+has not decided at height \(0\).
+In our runs, a counterexample to \texttt{NotYetTerminated}
+(i.e., RC\(=12\)) is treated as a termination witness.
+
+For Table~\ref{tab:termination}, each column has the following meaning:
+\textbf{Run} is the experiment identifier,
+$R_{\max}$ is the maximum round bound used in that run,
+\textbf{length} is the simulation trace-length bound passed to Apalache,
+\textbf{Time (s)} is wall-clock verification time in seconds,
+and \textbf{Result} indicates whether a termination witness was found
+(PASS corresponds to RC$=12$ in this setup).
+
+\begin{table}[ht]
+\centering
+\caption{%
+  Termination verification results for
+  $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$
+  under bounded delay attack
+  ($|V|=4$, $f=1$, $\Delta=\Sigma=1$, $H_{\max}=1$,
+  \texttt{length}$=100$, \texttt{max-run}$=60$).
+  RC$\,=\,12$ indicates that Apalache found a termination witness.
+}
+\label{tab:termination}
+\small
+\begin{tabular}{@{}ccrrc@{}}
+\toprule
+\textbf{Run} &
+$R_{\max}$ &
+\textbf{length} &
+\textbf{Time\,(s)} &
+\textbf{Result} \\
+\midrule
+TR-01 &  1 & 100 &    31.3 & PASS \\
+TR-02 &  2 & 100 &    25.4 & PASS \\
+TR-03 &  3 & 100 &    34.0 & PASS \\
+TR-04 &  5 & 100 &   117.1 & PASS \\
+TR-05 &  8 & 100 &    81.4 & PASS \\
+TR-06 & 10 & 100 &  1097.1 & PASS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==================================================================
+% 2) SAFETY
+% ==================================================================
+\subsection{Safety Verification}
+
+To verify safety of $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$
+under delay attacks, we use Apalache in bounded checking mode
+(\texttt{apalache-mc check}) and evaluate the invariant
+$\texttt{Agreement}$, requiring that no two initially honest validators
+decide different values at the same height.
+
+The safety property in standard logical form is:
+\begin{align*}
+\mathrm{Agreement}
+&\triangleq
+\forall h\in\{0,\dots,H_{\max}\},\; \forall p,q\in\mathrm{InitiallyHonest},
+\\
+&\qquad\Big(\mathrm{decision}_p(h)\neq\bot \wedge \mathrm{decision}_q(h)\neq\bot\Big)
+\Rightarrow
+\mathrm{decision}_p(h)=\mathrm{decision}_q(h)
+\end{align*}
+We fix the validator set $V=\{v_1,v_2,v_3,v_4\}$ with fault threshold $f=1$,
+network delay bound $\Delta=1$, protocol attack tolerance $\Sigma=1$,
+and block height bound $H_{\max}=1$.
+
+The checker outcome is interpreted as follows:
+RC$\,=\,0$ (NoError) means no Agreement counterexample exists within the
+bounded horizon (here \texttt{length}$=5$), while RC$\,=\,12$ would indicate
+that a violating trace was found.
+Table~\ref{tab:safety} shows RC$=0$ for every tested $R_{\max}$,
+so no safety violation is observed in this configuration.
+
+Similar to other bounded symbolic checks, runtime is not strictly monotonic
+in $R_{\max}$: solver effort depends on the structure of enabled/disabled
+transitions and pruning opportunities, not only on the numeric round bound.
+
+For Table~\ref{tab:safety}, the column semantics are:
+\textbf{Run} denotes the experiment identifier,
+$R_{\max}$ is the maximum round bound for that check,
+\textbf{length} is the bounded model-checking horizon,
+\textbf{Time (s)} is wall-clock runtime in seconds,
+and \textbf{Result} reports the Agreement-check outcome
+(PASS corresponds to RC$=0$, i.e., no counterexample found within bounds).
+
+\begin{table}[ht]
+\centering
+\caption{%
+  Safety verification results for
+  $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$
+  under bounded delay attack
+  ($|V|=4$, $f=1$, $\Delta=\Sigma=1$, $H_{\max}=1$,
+  \texttt{length}$=5$).
+  RC$\,=\,0$ indicates that no Agreement counterexample was found
+  within the bounded computation.
+}
+\label{tab:safety}
+\small
+\begin{tabular}{@{}ccrrc@{}}
+\toprule
+\textbf{Run} &
+$R_{\max}$ &
+\textbf{length} &
+\textbf{Time\,(s)} &
+\textbf{Result} \\
+\midrule
+SR-01 &  1 & 5 & 61.6 & PASS \\
+SR-02 &  2 & 5 & 60.6 & PASS \\
+SR-03 &  3 & 5 & 57.7 & PASS \\
+SR-04 &  5 & 5 & 48.1 & PASS \\
+SR-05 &  8 & 5 & 58.3 & PASS \\
+SR-06 & 10 & 5 & 44.9 & PASS \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -4,6 +4,14 @@ EXTENDS Integers, Naturals, FiniteSets
 (***************************************************************************
  DelayAttack-aligned UC-style Tendermint functionality.
 
+ Quick reading guide for readers without TLA+ background:
+   - A variable such as h[p] means "node p's current height".
+   - A primed variable such as h' means the value after one protocol step.
+   - UNCHANGED <<x, y>> means those variables keep their old values.
+   - [f EXCEPT ![p] = v] means "update function f at input p to v".
+   - /\ means logical AND, \/ means logical OR, and => means implication.
+   - \A and \E are universal/existential quantifiers.
+
  Traceability notes (read together with F_Tendermint_DelayAttack.md and
  SubFunctionality.md):
    - Variables map to protocol fields in the functionality text:
@@ -49,10 +57,16 @@ ASSUME
 Phases == {"propose", "prevote", "precommit", "commit"}
 TimeoutStates == {"none", "remain", "over"}
 
+\* Derived parameters used throughout the model.
+\* f is the Byzantine threshold; Quorum is the number of votes needed for
+\* a Tendermint-style supermajority; MaxTimerLen is a coarse timeout cap.
 f == (Cardinality(Validators) - 1) \div 3
 Quorum == 2 * f + 1
 MaxTimerLen == 2 * Delta + 2 * Sigma + 1
 
+\* Helper functions.
+\* SelectProposer chooses the current proposer from non-removed validators.
+\* UpdateVotingPower models the round-robin style proposer rotation.
 SelectProposer(vp, rem) ==
     CHOOSE k \in (Validators \ rem) :
         \A i \in (Validators \ rem) : vp[k] >= vp[i]
@@ -72,6 +86,9 @@ SyncAfterRoundOK(bits, p, bad) ==
        THEN [q \in Validators |-> 0]
        ELSE bits1
 
+\* State variables.
+\* Most protocol state is stored as functions indexed by validator names.
+\* Example: h[p] is node p's current height; r[p] is its current round.
 VARIABLES
     \* @type: Set(Str);
     corrupted,
@@ -152,12 +169,18 @@ vars == <<corrupted, removed, messages,
           timer, timeoutState, clockTime,
           syncBits, pendingNewHeight, attackCount>>
 
+\* Abbreviations for common predicates.
+\* Valid(v): v is a real block/value, not NilValue.
+\* DelayAttack(p): node p is currently in the delayed/attacked regime.
+\* Elapsed(p): local time already spent on p's current timer.
 Valid(v) == v \in Values
 DelayAttack(p) == (delta + sigma[p] > 2 * Delta) \/ (sigma[p] > 2 * Sigma)
 Elapsed(p) == clockTime - timer[p].start
 
 \* Protocol initialization (maps to initialization of local states in
 \* F_Tendermint_DelayAttack.md and the compact algorithm in SubFunctionality.md)
+\* All validators start at height 0, round 0, with no locks, no decisions,
+\* and no pending attack injected into sigma.
 Init ==
     /\ corrupted = InitiallyCorrupted
     /\ removed = {}
@@ -200,8 +223,13 @@ Init ==
 
 (***************************************************************************
  Non-main actions
+
+ These actions are not the core Tendermint pipeline, but they are useful for
+ modeling corruption, timers, and explicit height/round changes.
 ***************************************************************************)
 
+\* Corrupt(p) moves validator p into the corrupted set.
+\* This models adversarial takeover, bounded here by at most f+1 corrupted nodes.
 Corrupt(p) ==
     /\ p \in Validators
     /\ p \notin corrupted
@@ -217,6 +245,8 @@ Corrupt(p) ==
                    timer, timeoutState, clockTime,
                    syncBits, pendingNewHeight, attackCount>>
 
+\* AdversaryWake(p,s) injects delay parameter s into validator p.
+\* Intuitively, sigma[p] records how much extra adversarial delay p sees.
 AdversaryWake(p, s) ==
   /\ p \in Validators \ removed
   /\ p \notin corrupted  
@@ -322,6 +352,8 @@ ClockTick ==
                    timer, timeoutState,
                    syncBits, pendingNewHeight, attackCount>>
 
+\* NewHeight(p) starts the next block height after a successful commit.
+\* In particular, it increments h[p] and clears round-local state.
 NewHeight(p) ==
     /\ p \in Validators
     /\ phase[p] = "propose"
@@ -350,6 +382,8 @@ NewHeight(p) ==
                    timer, timeoutState, clockTime,
                    syncBits, attackCount>>
 
+\* RoundAdvance(p, rr) is the explicit jump to a later round rr.
+\* It is enabled when repeated failures force node p to abandon the current round.
 RoundAdvance(p, rr) ==
     /\ p \in Validators
     /\ rr \in 0..MaxRound
@@ -380,6 +414,11 @@ RoundAdvance(p, rr) ==
 
 (***************************************************************************
  Main pipeline: NewRoundAndPropose -> Prevote -> Precommit -> Commit
+
+ Reading hint: each action below describes one protocol phase.
+ The conjunctions say what must hold before the step and how variables change
+ afterwards. If a variable is not mentioned in the primed form, it is usually
+ listed under UNCHANGED.
 ***************************************************************************)
 
 \* NEWROUND + PROPOSAL phase:
@@ -595,10 +634,15 @@ Commit(p) ==
                    delta,
                    clockTime>>
 
+\* ProgressStep(p) is the honest validator pipeline restricted to one node p.
 ProgressStep(p) == NewRoundAndPropose(p) \/ Prevote(p) \/ Precommit(p) \/ Commit(p)
 
 (***************************************************************************
  Bounded Delay Attack abstractions
+
+ This section names the predicates used by Apalache when checking
+ termination and safety. Think of these as the logical properties of the
+ current state, not protocol steps by themselves.
 ***************************************************************************)
 
 \* Set of sigma values that trigger DelayAttack condition
@@ -618,12 +662,31 @@ InitiallyHonest == Validators \ InitiallyCorrupted
 \* point to the new (undecided) height. We want to know if ALL honest nodes decided at h=0.
 NotYetTerminated == ~(\A p \in InitiallyHonest : decision[p][0] # NilValue)
 
+\* Negation of Safety: two honest nodes decided different values at same height
+\* Use with Apalache simulate --inv=NotSafe to search for safety violations.
+\* EXITCODE=0 (no witness) => Safety holds for the given bounds.
+\* EXITCODE=12 (witness found) => Safety violated (should not happen with f<n/3).
+NotSafe ==
+    \E hh \in 0..MaxHeight :
+        \E p \in InitiallyHonest, q \in InitiallyHonest :
+            /\ decision[p][hh] # NilValue
+            /\ decision[q][hh] # NilValue
+            /\ decision[p][hh] # decision[q][hh]
 
 (***************************************************************************
  Safety / consistency checks (state-space friendly)
+
+ These operators summarize decisions and express the Agreement property in a
+ form that is easy for the model checker to evaluate.
 ***************************************************************************)
 
-\* Safety invariant used by checks: Agreement
+DecidedValuesAt(hh) ==
+    {decision[p][hh] : p \in {q \in InitiallyHonest : decision[q][hh] # NilValue}}
+
+AgreementAtHeight(hh) == Cardinality(DecidedValuesAt(hh)) <= 1
+
+Safety == \A hh \in 0..MaxHeight : AgreementAtHeight(hh)
+
 Agreement ==
     \A hh \in 0..MaxHeight :
         \A p \in InitiallyHonest, q \in InitiallyHonest :
@@ -666,6 +729,8 @@ TypeInvariant ==
 \*   - keeps protocol pipeline transitions only
 \* Safety checking path:
 \* allow one constrained adversary wake-up, then execute protocol transitions
+\* NextSafety is the reduced transition relation used for Agreement checks.
+\* It permits one constrained attack injection and then explores protocol steps.
 NextSafety ==
     \/ (attackCount = 0 /\ sigma["v1"] = 0 /\ AdversaryWake("v1", 2 * Sigma + 1))
     \/ \E p \in Validators : NewHeight(p)
@@ -675,6 +740,8 @@ NextSafety ==
     \/ \E p \in Validators : Commit(p)
     \/ \E p \in Validators, rr \in 0..MaxRound : RoundAdvance(p, rr)
 
+\* Next is the full transition relation: corruption, attack injection, and
+\* all protocol actions are available.
 Next ==
     \/ \E p \in Validators : Corrupt(p)
     \/ \E p \in Validators, s \in 0..2*Sigma+1 : AdversaryWake(p, s)
@@ -686,6 +753,9 @@ Next ==
     \/ \E p \in Validators, rr \in 0..MaxRound : RoundAdvance(p, rr)
 
 
+\* Spec is the ordinary temporal specification: start in Init, then follow
+\* Next forever. WF_vars(ProgressStep(p)) asks the checker not to ignore
+\* enabled honest progress forever.
 Spec == Init /\ [][Next]_vars
         /\ \A p \in Validators : WF_vars(ProgressStep(p))
 
@@ -727,6 +797,8 @@ NextBoundedAttack ==
 \* Full spec with bounded attack and termination as liveness goal
 \* Under bounded attack, all initially honest nodes should eventually decide
 \* Constants used by safety runs (check.py patches MaxRound here)
+\* CInitSafety is not a transition rule; it is just a concrete parameter choice
+\* for the checker (number of nodes, bounds, values, etc.).
 CInitSafety ==
     /\ Validators = {"v1", "v2", "v3", "v4"}
     /\ InitiallyCorrupted = {"v4"}
