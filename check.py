@@ -4,22 +4,38 @@
 check_termination.py
 Merged verifier for both properties with rsweep-style parameterization.
 
+Key idea (same as __run_rsweep.py):
+- Do NOT maintain multiple CInitSafetyR* constants in TLA.
+- Patch MaxRound inside target CInit block before each run.
+- Restore original TLA after runs.
 
 Commands:
-  python check_termination.py --termination
-  python check_termination.py --termination-sweep
-  python check_termination.py --safety
-  python check_termination.py --safety-sweep
-  python check_termination.py --both
+  python check.py --termination
+  python check.py --termination-sweep
+  python check.py --safety
+  python check.py --safety-sweep
+  python check.py --both
+  python check.py --optimized-safety --nodes=7 --height=2 --rmax=2
+  python check.py --optimized-termination --nodes=7 --height=2 --rmax=2
+  python check.py --optimized-both --nodes=7 --height=2 --rmax=2
+
+Optimized modes always enable bounded maximum-delay AdversaryWake injections.
 
 Optional:
-  --rmax=N   (for --termination / --safety single run)
+  --rmax=N      MaxRound for original single/sweep patching or optimized CInitOptimized
+  --nodes=N     validator count for optimized Apalache sanity checks, default 7
+  --height=N    MaxHeight for optimized Apalache sanity checks, default 2
+  --length=N    override optimized safety check length
+  --term-length=N override optimized termination simulation length
+  --max-run=N   override optimized termination simulation runs
 """
 
 import re
 import sys
 import time
+import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 WORKSPACE = Path(__file__).parent
@@ -42,6 +58,16 @@ TERM_MAX_RUN = 60
 # Safety params (check)
 SAFETY_LENGTH = 5
 
+# Optimized Apalache sanity-check params for reviewer response
+OPT_TERM_MAX_RUN = 1
+OPT_DEFAULT_NODES = 7
+OPT_DEFAULT_HEIGHT = 2
+OPT_DEFAULT_ROUND = 2
+OPT_DELTA = 1
+OPT_SIGMA = 1
+STATS_DIR = WORKSPACE / "verification_stats"
+STATS_DIR.mkdir(exist_ok=True)
+
 # Keep original text for restore
 ORIG_TLA = TLA_FILE.read_text(encoding="utf-8")
 
@@ -60,7 +86,7 @@ def run_cmd(cmd):
 
 
 def patch_maxround_in_cinit(cinit_name: str, rmax: int):
-    """Patch '/\ MaxRound = X' in target cinit block only."""
+    """Patch a MaxRound assignment in target cinit block only."""
     text = TLA_FILE.read_text(encoding="utf-8")
 
     # Match block header then first MaxRound assignment in that block scope.
@@ -72,6 +98,121 @@ def patch_maxround_in_cinit(cinit_name: str, rmax: int):
 
     new_text = text[:m.start()] + m.group(1) + str(rmax) + text[m.end():]
     TLA_FILE.write_text(new_text, encoding="utf-8")
+
+
+def validator_names(n: int):
+    return [f"v{i}" for i in range(1, n + 1)]
+
+
+def optimized_config(nodes=None, height=None, rmax=None):
+    n = nodes or OPT_DEFAULT_NODES
+    hmax = height if height is not None else OPT_DEFAULT_HEIGHT
+    r = rmax if rmax is not None else OPT_DEFAULT_ROUND
+    f = (n - 1) // 3
+    vals = validator_names(n)
+    corrupted = vals[-f:] if f > 0 else []
+    return {
+        "nodes": n,
+        "f": f,
+        "height": hmax,
+        "rmax": r,
+        "delta": OPT_DELTA,
+        "sigma": OPT_SIGMA,
+        "validators": vals,
+        "corrupted": corrupted,
+    }
+
+
+def patch_optimized_cinit(cfg):
+    """Patch CInitOptimized for larger bounded sanity checks."""
+    text = TLA_FILE.read_text(encoding="utf-8")
+    validators = "{" + ", ".join(f'"{v}"' for v in cfg["validators"]) + "}"
+    corrupted = "{" + ", ".join(f'"{v}"' for v in cfg["corrupted"]) + "}"
+    block = f'''CInitOptimized ==
+    /\\ Validators = {validators}
+    /\\ InitiallyCorrupted = {corrupted}
+    /\\ Delta = {cfg["delta"]}
+    /\\ Sigma = {cfg["sigma"]}
+    /\\ MaxHeight = {cfg["height"]}
+    /\\ MaxRound = {cfg["rmax"]}
+    /\\ Values = {{1}}
+    /\\ NilValue = 0'''
+    pat = re.compile(r"CInitOptimized\s*==[\s\S]*?(?=\n\n\\\* Full spec with bounded attack)")
+    m = pat.search(text)
+    if not m:
+        raise RuntimeError("Cannot find CInitOptimized block")
+    TLA_FILE.write_text(text[:m.start()] + block + text[m.end():], encoding="utf-8")
+
+
+def parse_int_arg(name, default_val):
+    prefix = f"--{name}="
+    for a in sys.argv[1:]:
+        if a.startswith(prefix):
+            return int(a.split("=", 1)[1])
+    return default_val
+
+
+def optimized_attack_length(cfg):
+    # Maximum-delay attack prefix uses AdversaryWake and delay-induced round advance
+    # for each allowed Byzantine fault budget slot, then four abstract progress
+    # steps per height: propose, prevote, precommit, commit.
+    return 2 * cfg["f"] + 4 * (cfg["height"] + 1) + 2
+
+
+def optimized_safety_length(cfg):
+    return parse_int_arg("length", optimized_attack_length(cfg))
+
+
+def optimized_term_length(cfg):
+    return parse_int_arg("term-length", optimized_attack_length(cfg))
+
+
+def optimized_max_run():
+    return parse_int_arg("max-run", OPT_TERM_MAX_RUN)
+
+
+def write_json_stats(name, rows, cfg, notes):
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "scope": "bounded sanity check of the ideal functionality, not real protocol verification or UC refinement",
+        "model": "F_Tendermint.tla",
+        "optimized_apalache": True,
+        "configuration": cfg,
+        "notes": notes,
+        "results": rows,
+        "summary": {
+            "checks": len(rows),
+            "passed": sum(1 for r in rows if r.get("result") == "PASS"),
+            "failed": sum(1 for r in rows if r.get("result") == "FAIL"),
+            "inconclusive": sum(1 for r in rows if r.get("result") == "INCONCLUSIVE"),
+            "errors": sum(1 for r in rows if str(r.get("result", "")).startswith("ERR")),
+            "total_time_s": round(sum(r.get("time", 0.0) for r in rows), 1),
+        },
+        "coverage": {
+            "validator_count": cfg["nodes"],
+            "fault_bound_f": cfg["f"],
+            "honest_count": cfg["nodes"] - cfg["f"],
+            "max_height": cfg["height"],
+            "height_count": cfg["height"] + 1,
+            "max_round": cfg["rmax"],
+            "delta": cfg["delta"],
+            "sigma": cfg["sigma"],
+            "lengths": sorted({r.get("length") for r in rows if r.get("length") is not None}),
+        },
+    }
+    out = STATS_DIR / f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print("Wrote stats:", out)
+    return out
+
+
+def print_coverage(cfg):
+    print("Coverage:")
+    print(f"  validators |V| = {cfg['nodes']} (f={cfg['f']}, honest={cfg['nodes'] - cfg['f']})")
+    print(f"  heights     = 0..{cfg['height']} ({cfg['height'] + 1} heights)")
+    print(f"  rounds      = 0..{cfg['rmax']}")
+    print(f"  Delta/Sigma = {cfg['delta']}/{cfg['sigma']}")
+    print("  scope       = bounded sanity check for ideal functionality internal consistency")
 
 
 def restore_tla():
@@ -299,6 +440,158 @@ def run_safety_sweep():
     write_safety_tex(rows)
 
 
+def run_optimized_safety(cfg, tag="OS-single"):
+    patch_optimized_cinit(cfg)
+    length = optimized_safety_length(cfg)
+    next_op = "NextOptimizedAttackApalache"
+    mode = "optimized-attack-safety"
+    cmd = [
+        "apalache-mc", "check",
+        "--features=no-rows",
+        "--cinit=CInitOptimized",
+        "--init=Init",
+        f"--next={next_op}",
+        "--inv=OptimizedAgreement",
+        "--no-deadlock",
+        f"--length={length}",
+        str(TLA_FILE),
+    ]
+    print()
+    print(SEP)
+    print(f"OPTIMIZED SAFETY [{tag}] WITH ADVERSARY WAKE")
+    print_coverage(cfg)
+    print("Command:")
+    print("  " + " ".join(cmd))
+    rc, sec = run_cmd(cmd)
+    print(f"Finished in {sec:.1f}s | EXITCODE={rc}")
+    if rc == EXIT_OK:
+        result = "PASS"
+        print("Optimized safety PASS: Agreement holds under n>=7/multiple-height bounds with bounded maximum-delay AdversaryWake enabled.")
+    elif rc == EXIT_COUNTEREXAMPLE:
+        result = "FAIL"
+        print("Optimized safety FAIL: Agreement counterexample found.")
+    else:
+        result = f"ERR({rc})"
+    return {"id": tag, "mode": mode, "length": length, "time": sec, "result": result, "rc": rc}
+
+
+def run_optimized_termination(cfg, tag="OT-single"):
+    patch_optimized_cinit(cfg)
+    length = optimized_term_length(cfg)
+    max_run = optimized_max_run()
+    next_op = "NextOptimizedAttackApalache"
+    mode = "optimized-attack-termination"
+    cmd = [
+        "apalache-mc", "simulate",
+        "--features=no-rows",
+        "--cinit=CInitOptimized",
+        "--init=Init",
+        f"--next={next_op}",
+        "--inv=NotYetOptimizedTerminated",
+        f"--length={length}",
+        f"--max-run={max_run}",
+        str(TLA_FILE),
+    ]
+    print()
+    print(SEP)
+    print(f"OPTIMIZED TERMINATION [{tag}] WITH ADVERSARY WAKE")
+    print_coverage(cfg)
+    print("Command:")
+    print("  " + " ".join(cmd))
+    rc, sec = run_cmd(cmd)
+    print(f"Finished in {sec:.1f}s | EXITCODE={rc}")
+    if rc == EXIT_COUNTEREXAMPLE:
+        result = "PASS"
+        print("Optimized termination PASS: Apalache found a decision witness by violating NotYetOptimizedTerminated.")
+    elif rc == EXIT_OK:
+        result = "INCONCLUSIVE"
+        print("No termination witness found under current length/max-run.")
+    else:
+        result = f"ERR({rc})"
+    return {"id": tag, "mode": mode, "length": length, "max_run": max_run, "time": sec, "result": result, "rc": rc}
+
+
+def write_optimized_tex(rows, cfg):
+    out = WORKSPACE / "optimized_verification_table.tex"
+    tex = []
+    tex.append("% Auto-generated by check.py optimized modes")
+    tex.append(r"\begin{table}[ht]")
+    tex.append(r"\centering")
+    tex.append(r"\caption{Apalache-optimized bounded sanity checks for the Tendermint ideal functionality with bounded maximum-delay \textsc{AdversaryWake} injections enabled. The optimized execution relation preserves the ideal-functionality state variables and phase semantics while synchronizing honest-validator progress to reduce scheduler interleavings. These checks do not verify the real Tendermint protocol or a UC refinement; they test internal consistency of the proposed ideal functionality under larger bounds with the delay-attack mechanism included.}")
+    tex.append(r"\label{tab:tendermint-optimized-verification}")
+    tex.append(r"\small")
+    tex.append(r"\begin{tabular}{@{}lrrrrrrc@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"\textbf{Check} & $|V|$ & $f$ & $H_{\max}$ & $R_{\max}$ & \textbf{length} & \textbf{Time(s)} & \textbf{Result} \\")
+    tex.append(r"\midrule")
+    for r in rows:
+        tex.append(
+            f"{r['mode']} & {cfg['nodes']} & {cfg['f']} & {cfg['height']} & {cfg['rmax']}"
+            f" & {r.get('length', '-')} & {r['time']:.1f} & {r['result']} " + r"\\"
+        )
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    out.write_text("\n".join(tex), encoding="utf-8")
+    print("Wrote:", out)
+
+
+def run_optimized_both():
+    cfg = optimized_config(
+        nodes=parse_int_arg("nodes", OPT_DEFAULT_NODES),
+        height=parse_int_arg("height", OPT_DEFAULT_HEIGHT),
+        rmax=parse_int_arg("rmax", OPT_DEFAULT_ROUND),
+    )
+    rows = []
+    try:
+        rows.append(run_optimized_safety(cfg, "OAS-01"))
+        rows.append(run_optimized_termination(cfg, "OAT-01"))
+    finally:
+        restore_tla()
+    print()
+    print(SEP)
+    print("OPTIMIZED VERIFICATION SUMMARY")
+    print(SEP2)
+    print("  {:<24} {:>8} {:>9}  {}".format("Mode", "Length", "Time(s)", "Result"))
+    print("  " + "-" * 52)
+    for r in rows:
+        print("  {:<24} {:>8} {:>9.1f}  {}".format(r["mode"], r.get("length", "-"), r["time"], r["result"]))
+    print(SEP)
+    notes = [
+        "The original F_Tendermint.tla remains the single TLA+ specification.",
+        "NextOptimizedAttackApalache enables bounded maximum-delay AdversaryWake injections.",
+        "It checks ideal-functionality internal consistency, not the real Tendermint protocol and not UC refinement.",
+    ]
+    write_json_stats("optimized_attack_verification", rows, cfg, notes)
+    write_optimized_tex(rows, cfg)
+
+
+def run_optimized_safety_only():
+    cfg = optimized_config(
+        nodes=parse_int_arg("nodes", OPT_DEFAULT_NODES),
+        height=parse_int_arg("height", OPT_DEFAULT_HEIGHT),
+        rmax=parse_int_arg("rmax", OPT_DEFAULT_ROUND),
+    )
+    try:
+        row = run_optimized_safety(cfg, "OAS-single")
+    finally:
+        restore_tla()
+    write_json_stats("optimized_attack_safety", [row], cfg, ["Optimized safety-only run with bounded maximum-delay AdversaryWake enabled."])
+
+
+def run_optimized_termination_only():
+    cfg = optimized_config(
+        nodes=parse_int_arg("nodes", OPT_DEFAULT_NODES),
+        height=parse_int_arg("height", OPT_DEFAULT_HEIGHT),
+        rmax=parse_int_arg("rmax", OPT_DEFAULT_ROUND),
+    )
+    try:
+        row = run_optimized_termination(cfg, "OAT-single")
+    finally:
+        restore_tla()
+    write_json_stats("optimized_attack_termination", [row], cfg, ["Optimized termination witness run with bounded maximum-delay AdversaryWake enabled."])
+
+
 def parse_rmax_from_args(default_val):
     for a in sys.argv[1:]:
         m = re.match(r"--rmax=(\d+)", a)
@@ -311,6 +604,30 @@ def main():
     args = set(sys.argv[1:])
 
     try:
+        if "--optimized-attack-both" in args:
+            run_optimized_both()
+            return
+
+        if "--optimized-attack-safety" in args:
+            run_optimized_safety_only()
+            return
+
+        if "--optimized-attack-termination" in args:
+            run_optimized_termination_only()
+            return
+
+        if "--optimized-both" in args:
+            run_optimized_both()
+            return
+
+        if "--optimized-safety" in args:
+            run_optimized_safety_only()
+            return
+
+        if "--optimized-termination" in args:
+            run_optimized_termination_only()
+            return
+
         if "--termination-sweep" in args:
             run_termination_sweep()
             return
