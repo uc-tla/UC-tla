@@ -34,6 +34,8 @@ import re
 import sys
 import time
 import json
+import shutil
+import tempfile
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +43,10 @@ from pathlib import Path
 WORKSPACE = Path(__file__).parent
 TLA_FILE = WORKSPACE / "F_Tendermint.tla"
 OUT_BASE = WORKSPACE / "_apalache-out" / "F_Tendermint.tla"
+
+RUN_DIR = Path(tempfile.mkdtemp(prefix="check_tla_", dir=str(WORKSPACE)))
+RUN_TLA_FILE = RUN_DIR / "F_Tendermint.tla"
+shutil.copy2(TLA_FILE, RUN_TLA_FILE)
 
 SEP = "=" * 62
 SEP2 = "-" * 62
@@ -68,9 +74,6 @@ OPT_SIGMA = 1
 STATS_DIR = WORKSPACE / "verification_stats"
 STATS_DIR.mkdir(exist_ok=True)
 
-# Keep original text for restore
-ORIG_TLA = TLA_FILE.read_text(encoding="utf-8")
-
 
 def find_latest_dir():
     if not OUT_BASE.exists():
@@ -87,7 +90,7 @@ def run_cmd(cmd):
 
 def patch_maxround_in_cinit(cinit_name: str, rmax: int):
     """Patch a MaxRound assignment in target cinit block only."""
-    text = TLA_FILE.read_text(encoding="utf-8")
+    text = RUN_TLA_FILE.read_text(encoding="utf-8")
 
     # Match block header then first MaxRound assignment in that block scope.
     # Keep this conservative and replace only first occurrence.
@@ -97,7 +100,7 @@ def patch_maxround_in_cinit(cinit_name: str, rmax: int):
         raise RuntimeError(f"Cannot find MaxRound assignment in {cinit_name}")
 
     new_text = text[:m.start()] + m.group(1) + str(rmax) + text[m.end():]
-    TLA_FILE.write_text(new_text, encoding="utf-8")
+    RUN_TLA_FILE.write_text(new_text, encoding="utf-8")
 
 
 def validator_names(n: int):
@@ -125,7 +128,7 @@ def optimized_config(nodes=None, height=None, rmax=None):
 
 def patch_optimized_cinit(cfg):
     """Patch CInitOptimized for larger bounded sanity checks."""
-    text = TLA_FILE.read_text(encoding="utf-8")
+    text = RUN_TLA_FILE.read_text(encoding="utf-8")
     validators = "{" + ", ".join(f'"{v}"' for v in cfg["validators"]) + "}"
     corrupted = "{" + ", ".join(f'"{v}"' for v in cfg["corrupted"]) + "}"
     block = f'''CInitOptimized ==
@@ -141,7 +144,7 @@ def patch_optimized_cinit(cfg):
     m = pat.search(text)
     if not m:
         raise RuntimeError("Cannot find CInitOptimized block")
-    TLA_FILE.write_text(text[:m.start()] + block + text[m.end():], encoding="utf-8")
+    RUN_TLA_FILE.write_text(text[:m.start()] + block + text[m.end():], encoding="utf-8")
 
 
 def parse_int_arg(name, default_val):
@@ -216,7 +219,7 @@ def print_coverage(cfg):
 
 
 def restore_tla():
-    TLA_FILE.write_text(ORIG_TLA, encoding="utf-8")
+    shutil.rmtree(RUN_DIR, ignore_errors=True)
 
 
 def read_tail_with_offset(path, n=450):
@@ -318,7 +321,7 @@ def run_termination_single(rmax: int, tag="TR-single"):
         "--inv=NotYetTerminated",
         f"--length={TERM_LENGTH}",
         f"--max-run={TERM_MAX_RUN}",
-        str(TLA_FILE),
+        str(RUN_TLA_FILE),
     ]
 
     print()
@@ -373,7 +376,7 @@ def run_safety_single(rmax: int, tag="SR-single"):
         "--next=NextSafety",
         "--inv=Agreement",
         f"--length={SAFETY_LENGTH}",
-        str(TLA_FILE),
+        str(RUN_TLA_FILE),
     ]
 
     print()
@@ -454,7 +457,7 @@ def run_optimized_safety(cfg, tag="OS-single"):
         "--inv=OptimizedAgreement",
         "--no-deadlock",
         f"--length={length}",
-        str(TLA_FILE),
+        str(RUN_TLA_FILE),
     ]
     print()
     print(SEP)
@@ -490,7 +493,7 @@ def run_optimized_termination(cfg, tag="OT-single"):
         "--inv=NotYetOptimizedTerminated",
         f"--length={length}",
         f"--max-run={max_run}",
-        str(TLA_FILE),
+        str(RUN_TLA_FILE),
     ]
     print()
     print(SEP)

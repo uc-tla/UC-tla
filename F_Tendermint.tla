@@ -906,9 +906,9 @@ OptDelayRoundAdvance ==
 OptAttackWake ==
     /\ OptSyncAt("propose")
     /\ attackCount < f
-    /\ \E p \in OptHonest :
-        /\ sigma[p] = 0
-        /\ AdversaryWake(p, 2 * Sigma + 1)
+    /\ r[OptPivot] < MaxRound
+    /\ sigma[OptPivot] = 0
+    /\ AdversaryWake(OptPivot, 2 * Sigma + 1)
 
 OptDone ==
     /\ OptSyncAt("done")
@@ -918,7 +918,10 @@ OptProgressStep == OptNewRoundAndPropose \/ OptPrevote \/ OptPrecommit \/ OptCom
 
 NextOptimizedApalache == OptProgressStep
 
-OptAttackProgressStep == OptAttackWake \/ OptDelayRoundAdvance \/ OptProgressStep
+OptAttackProgressStep ==
+    \/ (attackCount < f /\ ~(\E p \in OptHonest : DelayAttack(p)) /\ OptAttackWake)
+    \/ (attackCount <= f /\ (\E p \in OptHonest : DelayAttack(p)) /\ OptDelayRoundAdvance)
+    \/ (attackCount = f /\ OptProgressStep)
 
 NextOptimizedAttackApalache == OptAttackProgressStep
 
