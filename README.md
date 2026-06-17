@@ -77,7 +77,7 @@ python check.py --termination --rmax=5
 - `comprehensive_verification_table.tex` -- unified results from `--comprehensive`
 - `verification_stats/` -- JSON statistics for each run
 
-The tables shown in the published paper are condensed for space; full run results are included in the repository artifacts above.
+The tables shown in the matching paper are condensed for space; full run results are included in the repository artifacts above.
 
 ## Direct Apalache commands
 
