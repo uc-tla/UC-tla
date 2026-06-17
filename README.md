@@ -128,11 +128,3 @@ apalache-mc check \
   F_Tendermint.tla
 ```
 
-## Notes
-
-- All runs verify internal consistency of the ideal functionality
-  $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$, not the real Tendermint
-  protocol and not UC refinement.
-- The script creates a temporary copy of `F_Tendermint.tla` for each run;
-  the source file is never modified.
-- `MaxRound` is patched per run via regex replacement inside the temporary copy.
