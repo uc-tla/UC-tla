@@ -10,8 +10,14 @@ The specification is verified in two complementary phases:
 
 | Phase | Mode | Description |
 |-------|------|-------------|
-| 1 | Standard | Exhaustive bounded model checking of the full interleaved transition relation.  Sweeps $\Sigma\in\{3,4,5\}$ and $\Delta\in\{3,4\}$ to stress-test the delay-attack window on a fixed small validator set. |
-| 2 | Scalable | Coalesced honest-transition execution path that updates all honest validators in a single coordinated step, reducing state-space growth from $O(|V|^k)$ to $O(|V|\cdot H_{\max}\cdot R_{\max})$.  Preserves all core protocol semantics and the complete delay-attack surface, enabling verification for $|V|\in\{7,10,13\}$ at $H_{\max}\in\{3,5\}$. |
+| 1 | Standard | Exhaustive bounded model checking of the full interleaved transition
+|     relation.  Sweeps $\Sigma\in\{3,4,5\}$ and $\Delta\in\{3,4\}$ to stress-test
+|     the delay-attack window on a fixed small validator set. |
+| 2 | Scalable | Coalesced honest-transition execution path that updates all honest
+|     validators in a single coordinated step, reducing state-space growth from
+|     $O(|V|^k)$ to $O(|V|\cdot H_{\max}\cdot R_{\max})$.  Preserves all core protocol
+|     semantics and the complete delay-attack surface, enabling verification for
+|     $|V|\in\{7,10,13\}$ at $H_{\max}\in\{3,5\}$. |
 
 Both phases check the same logical invariants (`Agreement` for safety, `NotYetTerminated` for liveness) against the single TLA+ specification in `F_Tendermint.tla`.  Phase 2 extends the Phase 1 guarantees to larger validator sets without weakening the properties being verified.
 
