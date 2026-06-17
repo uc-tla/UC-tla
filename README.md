@@ -49,8 +49,7 @@ python check.py --optimized-termination --nodes=13 --height=3 --rmax=2
 python check.py --comprehensive
 ```
 
-This executes all Phase 1 safety sweeps with aggressive Sigma/Delta combinations
-and all Phase 2 scalable configurations, then writes `comprehensive_verification_table.tex`.
+This runs all Phase 1 safety sweeps across the full Sigma/Delta matrix and all Phase 2 scalable configurations, then writes `comprehensive_verification_table.tex`.
 
 ### Single-run overrides
 
@@ -77,6 +76,8 @@ python check.py --termination --rmax=5
 - `optimized_verification_table.tex` -- Phase 2 scalable verification results
 - `comprehensive_verification_table.tex` -- unified results from `--comprehensive`
 - `verification_stats/` -- JSON statistics for each run
+
+The tables shown in the published paper are condensed for space; full run results are included in the repository artifacts above.
 
 ## Direct Apalache commands
 
@@ -120,4 +121,3 @@ apalache-mc check \
   --length=18 \
   F_Tendermint.tla
 ```
-
