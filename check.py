@@ -18,16 +18,17 @@ Commands:
   python check.py --optimized-safety --nodes=7 --height=2 --rmax=2
   python check.py --optimized-termination --nodes=7 --height=2 --rmax=2
   python check.py --optimized-both --nodes=7 --height=2 --rmax=2
+  python check.py --comprehensive   # 13 configs: Phase 1 (8 std) + Phase 2 (5 scalable)
 
 Optimized modes always enable bounded maximum-delay AdversaryWake injections.
 
 Optional:
-  --rmax=N      MaxRound for original single/sweep patching or optimized CInitOptimized
-  --nodes=N     validator count for optimized Apalache sanity checks, default 7
-  --height=N    MaxHeight for optimized Apalache sanity checks, default 2
-  --length=N    override optimized safety check length
+  --rmax=N       MaxRound for original single/sweep patching or optimized CInitOptimized
+  --nodes=N      validator count for optimized Apalache sanity checks, default 7
+  --height=N     MaxHeight for optimized Apalache sanity checks, default 2
+  --length=N     override optimized safety check length
   --term-length=N override optimized termination simulation length
-  --max-run=N   override optimized termination simulation runs
+  --max-run=N    override optimized termination simulation runs
 """
 
 import re
@@ -73,6 +74,38 @@ OPT_DELTA = 1
 OPT_SIGMA = 1
 STATS_DIR = WORKSPACE / "verification_stats"
 STATS_DIR.mkdir(exist_ok=True)
+
+# -----------------------------------------------------------------------
+# 13-configuration two-phase sweep (Phase 1: standard | Phase 2: scalable)
+# -----------------------------------------------------------------------
+# Phase 1 – standard verification: |V|=4, f=1, H=1, vary aggressive Sigma/Delta/Rmax
+#   each entry = (sigma, delta, rmax,  tag)
+#   Aggressive settings: Sigma in {3,4,5}, Delta in {3,4} to stress-test
+#   the delay-attack window and round-exploration bounds.
+PHASE1_CONFIGS = [
+    (3, 3, 2, "P1-01"),
+    (3, 3, 3, "P1-02"),
+    (3, 3, 5, "P1-03"),
+    (4, 3, 2, "P1-04"),
+    (4, 3, 3, "P1-05"),
+    (4, 4, 2, "P1-06"),
+    (4, 4, 3, "P1-07"),
+    (5, 4, 2, "P1-08"),
+    (5, 4, 3, "P1-09"),
+]
+
+# Phase 2 – scalable verification: larger |V| and H, optimized Apalache next
+#   each entry = (nodes, height, rmax,  tag)
+PHASE2_CONFIGS = [
+    (7,  5, 2, "P2-01"),
+    (7,  5, 3, "P2-02"),
+    (7,  3, 2, "P2-03"),
+    (7,  3, 5, "P2-04"),
+    (10, 3, 2, "P2-05"),
+    (10, 3, 3, "P2-06"),
+    (13, 3, 2, "P2-07"),
+    (13, 3, 3, "P2-08"),
+]
 
 
 def find_latest_dir():
@@ -126,20 +159,43 @@ def optimized_config(nodes=None, height=None, rmax=None):
     }
 
 
+def patch_safety_params(sigma: int, delta: int, rmax: int):
+    """Patch Sigma, Delta, and MaxRound in CInitSafety."""
+    text = RUN_TLA_FILE.read_text(encoding="utf-8")
+
+    pat = re.compile(
+        r"(CInitSafety\s*==[\s\S]*?)(/\\\s*Delta\s*=\s*)(\d+)([\s\S]*?)(/\\\s*Sigma\s*=\s*)(\d+)([\s\S]*?)(/\\\s*MaxRound\s*=\s*)(\d+)"
+    )
+    m = pat.search(text)
+    if not m:
+        raise RuntimeError("Cannot find Delta/Sigma/MaxRound in CInitSafety")
+
+    new_text = (
+        text[:m.start()]
+        + m.group(1) + m.group(2) + str(delta)
+        + m.group(4) + m.group(5) + str(sigma)
+        + m.group(7) + m.group(8) + str(rmax)
+        + text[m.end():]
+    )
+    RUN_TLA_FILE.write_text(new_text, encoding="utf-8")
+
+
 def patch_optimized_cinit(cfg):
     """Patch CInitOptimized for larger bounded sanity checks."""
     text = RUN_TLA_FILE.read_text(encoding="utf-8")
     validators = "{" + ", ".join(f'"{v}"' for v in cfg["validators"]) + "}"
     corrupted = "{" + ", ".join(f'"{v}"' for v in cfg["corrupted"]) + "}"
-    block = f'''CInitOptimized ==
-    /\\ Validators = {validators}
-    /\\ InitiallyCorrupted = {corrupted}
-    /\\ Delta = {cfg["delta"]}
-    /\\ Sigma = {cfg["sigma"]}
-    /\\ MaxHeight = {cfg["height"]}
-    /\\ MaxRound = {cfg["rmax"]}
-    /\\ Values = {{1}}
-    /\\ NilValue = 0'''
+    block = (
+        f"CInitOptimized ==\n"
+        f"    /\\ Validators = {validators}\n"
+        f"    /\\ InitiallyCorrupted = {corrupted}\n"
+        f"    /\\ Delta = {cfg['delta']}\n"
+        f"    /\\ Sigma = {cfg['sigma']}\n"
+        f"    /\\ MaxHeight = {cfg['height']}\n"
+        f"    /\\ MaxRound = {cfg['rmax']}\n"
+        f"    /\\ Values = {{1}}\n"
+        f"    /\\ NilValue = 0"
+    )
     pat = re.compile(r"CInitOptimized\s*==[\s\S]*?(?=\n\n\\\* Full spec with bounded attack)")
     m = pat.search(text)
     if not m:
@@ -192,14 +248,12 @@ def write_json_stats(name, rows, cfg, notes):
             "total_time_s": round(sum(r.get("time", 0.0) for r in rows), 1),
         },
         "coverage": {
-            "validator_count": cfg["nodes"],
-            "fault_bound_f": cfg["f"],
-            "honest_count": cfg["nodes"] - cfg["f"],
-            "max_height": cfg["height"],
-            "height_count": cfg["height"] + 1,
-            "max_round": cfg["rmax"],
-            "delta": cfg["delta"],
-            "sigma": cfg["sigma"],
+            "validator_count": cfg.get("nodes", "mixed"),
+            "fault_bound_f": cfg.get("f", "mixed"),
+            "max_height": cfg.get("height", "mixed"),
+            "max_round": cfg.get("rmax", "mixed"),
+            "delta": cfg.get("delta", "mixed"),
+            "sigma": cfg.get("sigma", "mixed"),
             "lengths": sorted({r.get("length") for r in rows if r.get("length") is not None}),
         },
     }
@@ -366,6 +420,55 @@ def run_termination_sweep():
     print(SEP)
 
 
+def run_safety_with_params(sigma: int, delta: int, rmax: int, tag="SP-single"):
+    """Run safety check with specific Sigma, Delta, MaxRound parameters."""
+    patch_safety_params(sigma, delta, rmax)
+    cmd = [
+        "apalache-mc", "check",
+        "--features=no-rows",
+        "--cinit=CInitSafety",
+        "--init=InitSafety",
+        "--next=NextSafety",
+        "--inv=Agreement",
+        f"--length={SAFETY_LENGTH}",
+        str(RUN_TLA_FILE),
+    ]
+
+    print()
+    print(SEP)
+    print(f"SAFETY [{tag}] Sigma={sigma}, Delta={delta}, R_max={rmax}")
+    print("Command:")
+    print("  " + " ".join(cmd))
+
+    rc, sec = run_cmd(cmd)
+    print(f"Finished in {sec:.1f}s | EXITCODE={rc}")
+
+    if rc == EXIT_OK:
+        print("Safety PASS: Agreement holds.")
+        result = "PASS"
+    elif rc == EXIT_COUNTEREXAMPLE:
+        print("Safety FAIL: counterexample found.")
+        result = "FAIL"
+    else:
+        result = f"ERR({rc})"
+
+    return {
+        "id": tag,
+        "phase": 1,
+        "sigma": sigma,
+        "delta": delta,
+        "rmax": rmax,
+        "nodes": 4,
+        "f": 1,
+        "height": 1,
+        "length": SAFETY_LENGTH,
+        "time": sec,
+        "result": result,
+        "rc": rc,
+        "mode": "standard-safety",
+    }
+
+
 def run_safety_single(rmax: int, tag="SR-single"):
     patch_maxround_in_cinit("CInitSafety", rmax)
     cmd = [
@@ -406,7 +509,13 @@ def write_safety_tex(rows):
     tex.append("% Auto-generated by check_termination.py --safety-sweep")
     tex.append(r"\begin{table}[ht]")
     tex.append(r"\centering")
-    tex.append(r"\caption{Safety (Agreement) verification for $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$ under bounded delay attack ($|V|=4$, $f=1$, $\Delta=\Sigma=1$, $H_{\max}=1$, \texttt{length}$=" + str(SAFETY_LENGTH) + r"$). MaxRound is patched per run (rsweep-style), not hard-coded via multiple CInit blocks. RC$=0$ confirms Agreement.}")
+    tex.append(
+        r"\caption{Safety (Agreement) verification for $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$ "
+        r"under bounded delay attack ($|V|=4$, $f=1$, $\Delta=\Sigma=1$, $H_{\max}=1$, "
+        r"\texttt{length}$=" + str(SAFETY_LENGTH) + r"$). "
+        r"MaxRound is patched per run (rsweep-style), not hard-coded via multiple CInit blocks. "
+        r"RC$=0$ confirms Agreement.}"
+    )
     tex.append(r"\label{tab:safety}")
     tex.append(r"\small")
     tex.append(r"\begin{tabular}{@{}ccrrc@{}}")
@@ -475,7 +584,21 @@ def run_optimized_safety(cfg, tag="OS-single"):
         print("Optimized safety FAIL: Agreement counterexample found.")
     else:
         result = f"ERR({rc})"
-    return {"id": tag, "mode": mode, "length": length, "time": sec, "result": result, "rc": rc}
+    return {
+        "id": tag,
+        "phase": 2,
+        "mode": mode,
+        "nodes": cfg["nodes"],
+        "f": cfg["f"],
+        "height": cfg["height"],
+        "sigma": cfg["sigma"],
+        "delta": cfg["delta"],
+        "rmax": cfg["rmax"],
+        "length": length,
+        "time": sec,
+        "result": result,
+        "rc": rc,
+    }
 
 
 def run_optimized_termination(cfg, tag="OT-single"):
@@ -511,32 +634,143 @@ def run_optimized_termination(cfg, tag="OT-single"):
         print("No termination witness found under current length/max-run.")
     else:
         result = f"ERR({rc})"
-    return {"id": tag, "mode": mode, "length": length, "max_run": max_run, "time": sec, "result": result, "rc": rc}
+    return {
+        "id": tag,
+        "phase": 2,
+        "mode": mode,
+        "nodes": cfg["nodes"],
+        "f": cfg["f"],
+        "height": cfg["height"],
+        "sigma": cfg["sigma"],
+        "delta": cfg["delta"],
+        "rmax": cfg["rmax"],
+        "length": length,
+        "max_run": max_run,
+        "time": sec,
+        "result": result,
+        "rc": rc,
+    }
 
 
-def write_optimized_tex(rows, cfg):
+def write_optimized_tex(rows):
+    """Write all run results to optimized_verification_table.tex.
+    rows must contain phase, nodes, f, height, sigma, delta, rmax fields.
+    """
     out = WORKSPACE / "optimized_verification_table.tex"
+    p1 = [r for r in rows if r.get("phase") == 1]
+    p2 = [r for r in rows if r.get("phase") == 2]
+
     tex = []
-    tex.append("% Auto-generated by check.py optimized modes")
+    tex.append("% Auto-generated by check.py --comprehensive")
     tex.append(r"\begin{table}[ht]")
     tex.append(r"\centering")
-    tex.append(r"\caption{Apalache-optimized bounded sanity checks for the Tendermint ideal functionality with bounded maximum-delay \textsc{AdversaryWake} injections enabled. The optimized execution relation preserves the ideal-functionality state variables and phase semantics while synchronizing honest-validator progress to reduce scheduler interleavings. These checks do not verify the real Tendermint protocol or a UC refinement; they test internal consistency of the proposed ideal functionality under larger bounds with the delay-attack mechanism included.}")
+    tex.append(
+        r"\caption{Apalache verification of $\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$ under bounded delay attacks. "
+        r"Phase\,1 (standard mode, $|V|=4$, $f=1$, $H_{\max}=1$) explores parameter sensitivity across "
+        r"$\Sigma\times\Delta\times R_{\max}$ combinations. "
+        r"Phase\,2 (optimized mode) demonstrates scalability for $|V|\in\{7,10,13\}$ with $H_{\max}\in\{3,5\}$. "
+        r"These checks verify internal consistency of the ideal functionality, not the real protocol.}"
+    )
     tex.append(r"\label{tab:tendermint-optimized-verification}")
     tex.append(r"\small")
-    tex.append(r"\begin{tabular}{@{}lrrrrrrc@{}}")
+    tex.append(r"\begin{tabular}{@{}llcrrrc@{}}")
     tex.append(r"\toprule")
-    tex.append(r"\textbf{Check} & $|V|$ & $f$ & $H_{\max}$ & $R_{\max}$ & \textbf{length} & \textbf{Time(s)} & \textbf{Result} \\")
+    tex.append(
+        r"\textbf{Phase} & \textbf{Check} & $|V|$ & $f$ & $H_{\max}$ & "
+        r"$\Sigma/\Delta$ & $R_{\max}$ & \textbf{length} & \textbf{Time(s)} & \textbf{Result} \\"
+    )
     tex.append(r"\midrule")
-    for r in rows:
+
+    for r in p1:
         tex.append(
-            f"{r['mode']} & {cfg['nodes']} & {cfg['f']} & {cfg['height']} & {cfg['rmax']}"
-            f" & {r.get('length', '-')} & {r['time']:.1f} & {r['result']} " + r"\\"
+            f"1 (std) & {r['mode']} & {r['nodes']} & {r['f']} & {r['height']} & "
+            f"{r['sigma']}/{r['delta']} & {r['rmax']} & "
+            f"{r.get('length', '-')} & {r['time']:.1f} & {r['result']} " + r"\\"
         )
+
+    for r in p2:
+        tex.append(
+            f"2 (scalable) & {r['mode']} & {r['nodes']} & {r['f']} & {r['height']} & "
+            f"{r['sigma']}/{r['delta']} & {r['rmax']} & "
+            f"{r.get('length', '-')} & {r['time']:.1f} & {r['result']} " + r"\\"
+        )
+
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
     out.write_text("\n".join(tex), encoding="utf-8")
     print("Wrote:", out)
+
+
+def run_comprehensive():
+    """Run the full 13-configuration two-phase sweep and export results to tex."""
+    rows = []
+
+    try:
+        # Phase 1: standard verification – parameter sensitivity (|V|=4, f=1, H=1)
+        print("\n" + "=" * 70)
+        print("PHASE 1: Standard Verification - Parameter Sensitivity")
+        print("  |V|=4  f=1  H_max=1  vary Sigma/Delta/Rmax")
+        print("=" * 70)
+
+        for sigma, delta, rmax, tag in PHASE1_CONFIGS:
+            row = run_safety_with_params(sigma, delta, rmax, tag)
+            row["phase"] = 1
+            rows.append(row)
+            write_optimized_tex(rows)  # incremental export after each run
+
+        # Phase 2: scalable verification – larger |V| and H, optimized Apalache next
+        print("\n" + "=" * 70)
+        print("PHASE 2: Scalable Verification - Scalability")
+        print("  optimized Apalache next-relation with bounded AdversaryWake")
+        print("=" * 70)
+
+        for nodes, height, rmax, tag in PHASE2_CONFIGS:
+            cfg = optimized_config(nodes=nodes, height=height, rmax=rmax)
+            # run both safety and termination for each scalable config
+            row_s = run_optimized_safety(cfg, f"{tag}-safety")
+            rows.append(row_s)
+            write_optimized_tex(rows)  # incremental export
+
+            row_t = run_optimized_termination(cfg, f"{tag}-term")
+            rows.append(row_t)
+            write_optimized_tex(rows)  # incremental export
+
+    finally:
+        restore_tla()
+
+    # Final export
+    write_optimized_tex(rows)
+    write_json_stats("comprehensive", rows, {}, [
+        "Two-phase sweep: Phase 1 = 8 standard safety checks, Phase 2 = 8 scalable (safety+termination) configs",
+        "Phase 2 nodes: |V| in {7,10,13}, H_max in {3,5}, optimized Apalache next-relation",
+    ])
+
+    # Print summary table
+    print()
+    print(SEP)
+    print("COMPREHENSIVE VERIFICATION SUMMARY")
+    print(SEP2)
+    print(
+        "  {:<16} {:>4} {:>3} {:>3} {:>5} {:>5} {:>7} {:>9}  {}".format(
+            "Check", "|V|", "f", "H", "Sigma", "Delta", "Rmax", "Time(s)", "Result"
+        )
+    )
+    print("  " + "-" * 76)
+    for r in rows:
+        print(
+            "  {:<16} {:>4} {:>3} {:>3} {:>5} {:>5} {:>7} {:>9.1f}  {}".format(
+                r["id"], r["nodes"], r["f"], r["height"],
+                r["sigma"], r["delta"], r["rmax"], r["time"], r["result"]
+            )
+        )
+    print(SEP)
+    passed = sum(1 for r in rows if r["result"] == "PASS")
+    failed = sum(1 for r in rows if r["result"] == "FAIL")
+    inconclusive = sum(1 for r in rows if r["result"] == "INCONCLUSIVE")
+    errors = sum(1 for r in rows if str(r["result"]).startswith("ERR"))
+    print(f"  Totals: {len(rows)} checks | PASS={passed} FAIL={failed} INCONCLUSIVE={inconclusive} ERR={errors}")
+    print(SEP)
 
 
 def run_optimized_both():
@@ -566,7 +800,7 @@ def run_optimized_both():
         "It checks ideal-functionality internal consistency, not the real Tendermint protocol and not UC refinement.",
     ]
     write_json_stats("optimized_attack_verification", rows, cfg, notes)
-    write_optimized_tex(rows, cfg)
+    write_optimized_tex(rows)
 
 
 def run_optimized_safety_only():
@@ -579,7 +813,9 @@ def run_optimized_safety_only():
         row = run_optimized_safety(cfg, "OAS-single")
     finally:
         restore_tla()
-    write_json_stats("optimized_attack_safety", [row], cfg, ["Optimized safety-only run with bounded maximum-delay AdversaryWake enabled."])
+    write_json_stats("optimized_attack_safety", [row], cfg,
+                      ["Optimized safety-only run with bounded maximum-delay AdversaryWake enabled."])
+    write_optimized_tex([row])
 
 
 def run_optimized_termination_only():
@@ -592,7 +828,9 @@ def run_optimized_termination_only():
         row = run_optimized_termination(cfg, "OAT-single")
     finally:
         restore_tla()
-    write_json_stats("optimized_attack_termination", [row], cfg, ["Optimized termination witness run with bounded maximum-delay AdversaryWake enabled."])
+    write_json_stats("optimized_attack_termination", [row], cfg,
+                      ["Optimized termination witness run with bounded maximum-delay AdversaryWake enabled."])
+    write_optimized_tex([row])
 
 
 def parse_rmax_from_args(default_val):
@@ -629,6 +867,10 @@ def main():
 
         if "--optimized-termination" in args:
             run_optimized_termination_only()
+            return
+
+        if "--comprehensive" in args:
+            run_comprehensive()
             return
 
         if "--termination-sweep" in args:
