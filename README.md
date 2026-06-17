@@ -1,23 +1,16 @@
 # UC-T-BFT Verification Project
 
 Formal verification of the Tendermint ideal functionality
-$\mathcal{F}^{V,\Delta,\Sigma}_{\mathrm{Tendermint}}$ under bounded delay attacks,
+F_Tendermint(V, Delta, Sigma) under bounded delay attacks,
 using TLA+ and the Apalache model checker.
 
 ## Verification strategy
 
 The specification is verified in two complementary phases:
 
-| Phase | Mode | Description |
-|-------|------|-------------|
-| 1 | Standard | Exhaustive bounded model checking of the full interleaved transition
-|     relation.  Sweeps $\Sigma\in\{3,4,5\}$ and $\Delta\in\{3,4\}$ to stress-test
-|     the delay-attack window on a fixed small validator set. |
-| 2 | Scalable | Coalesced honest-transition execution path that updates all honest
-|     validators in a single coordinated step, reducing state-space growth from
-|     $O(|V|^k)$ to $O(|V|\cdot H_{\max}\cdot R_{\max})$.  Preserves all core protocol
-|     semantics and the complete delay-attack surface, enabling verification for
-|     $|V|\in\{7,10,13\}$ at $H_{\max}\in\{3,5\}$. |
+**Phase 1 -- Standard.** Exhaustive bounded model checking of the full interleaved transition relation.  Sweeps Sigma in {3, 4, 5} and Delta in {3, 4} to stress-test the delay-attack window on a fixed small validator set (|V| = 4, f = 1).
+
+**Phase 2 -- Scalable.** Coalesced honest-transition execution path that updates all honest validators in a single coordinated step, reducing state-space growth from O(|V|^k) to O(|V| * H_max * R_max).  Preserves all core protocol semantics and the complete delay-attack surface, enabling verification for |V| in {7, 10, 13} at H_max in {3, 5}.
 
 Both phases check the same logical invariants (`Agreement` for safety, `NotYetTerminated` for liveness) against the single TLA+ specification in `F_Tendermint.tla`.  Phase 2 extends the Phase 1 guarantees to larger validator sets without weakening the properties being verified.
 
@@ -56,7 +49,7 @@ python check.py --optimized-termination --nodes=13 --height=3 --rmax=2
 python check.py --comprehensive
 ```
 
-This executes all Phase 1 safety sweeps with aggressive $\Sigma/\Delta$ combinations
+This executes all Phase 1 safety sweeps with aggressive Sigma/Delta combinations
 and all Phase 2 scalable configurations, then writes `comprehensive_verification_table.tex`.
 
 ### Single-run overrides
